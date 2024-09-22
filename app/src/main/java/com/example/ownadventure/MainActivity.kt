@@ -1,15 +1,21 @@
 package com.example.ownadventure
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.codepath.asynchttpclient.AsyncHttpClient
@@ -17,6 +23,7 @@ import com.codepath.asynchttpclient.callback.TextHttpResponseHandler
 import com.google.gson.Gson
 import com.skydoves.landscapist.glide.GlideImage
 import okhttp3.Headers
+
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,78 +36,57 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun PokemonApp() {
-    var pokemonName by remember { mutableStateOf("Pikachu") }
-    var pokemonImageUrl by remember { mutableStateOf("") }
-    var pokemonAbilities by remember { mutableStateOf("") }
-    var errorMessage by remember { mutableStateOf("") }
-    var userInput by remember { mutableStateOf(pokemonName) } // State to track user input
+    var pokemonList by remember { mutableStateOf<List<PokemonSummary>>(emptyList()) }
+    var searchText by remember { mutableStateOf("") }
+    val errorMessage by remember { mutableStateOf("") }
+    val context = LocalContext.current
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
+    LaunchedEffect(Unit) {
+        fetchPokemonList { fetchedList ->
+            pokemonList = fetchedList
+        }
+    }
+
+    Column(modifier = Modifier
+        .fillMaxSize()
+        .padding(16.dp)) {
         TextField(
-            value = userInput,
-            onValueChange = { userInput = it },
-            label = { Text("Enter Pokémon Name") },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            value = searchText,
+            onValueChange = { searchText = it },
+            label = { Text("Search Pokémon") },
+            keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(
+                onSearch = {
+                    // Handle search action if needed
+                }
+            ),
+            modifier = Modifier.fillMaxWidth()
         )
-
-        GlideImage(
-            imageModel = { pokemonImageUrl },
-            modifier = Modifier.size(200.dp)
-        )
-
-        Text(text = pokemonName, fontSize = 24.sp)
-        Text(text = pokemonAbilities, fontSize = 16.sp, modifier = Modifier.padding(top = 8.dp))
 
         if (errorMessage.isNotEmpty()) {
-            Text(
-                text = errorMessage,
-                fontSize = 14.sp,
-                color = androidx.compose.ui.graphics.Color.Red
-            )
+            Text(text = errorMessage, color = androidx.compose.ui.graphics.Color.Red)
         }
 
-        Button(
-            onClick = {
-                if (userInput.isNotBlank()) {
-                    fetchPokemonData(userInput.lowercase(), onSuccess = {
-                        pokemonName = it.name.capitalize()
-                        pokemonAbilities = it.abilities.joinToString(", ") { ability -> ability.ability.name }
-                        pokemonImageUrl = it.sprites.front_default
-                        errorMessage = ""
-                    }, onFailure = {
-                        errorMessage = "Failed to load Pokémon data"
-                    })
-                } else {
-                    errorMessage = "Please enter a Pokémon name"
+        LazyColumn {
+            val filteredList =
+                pokemonList.filter { it.name.contains(searchText, ignoreCase = true) }
+            items(filteredList) { pokemonSummary ->
+                PokemonListItem(pokemonSummary) { name ->
+                    Toast.makeText(context, "$name clicked!", Toast.LENGTH_SHORT).show()
                 }
-            },
-            modifier = Modifier.padding(top = 16.dp)
-        ) {
-            Text("Fetch Pokémon")
+            }
         }
     }
 }
 
-fun fetchPokemonData(
-    pokemonName: String,
-    onSuccess: (PokemonResponse) -> Unit,
-    onFailure: () -> Unit
-) {
+fun fetchPokemonList(onSuccess: (List<PokemonSummary>) -> Unit) {
     val client = AsyncHttpClient()
-    val url = "https://pokeapi.co/api/v2/pokemon/$pokemonName"
+    val url = "https://pokeapi.co/api/v2/pokemon?limit=100"
 
     client[url, null, object : TextHttpResponseHandler() {
         override fun onSuccess(statusCode: Int, headers: Headers, response: String) {
-            response.let {
-                val pokemon = Gson().fromJson(it, PokemonResponse::class.java)
-                onSuccess(pokemon)
-            }
+            val pokemonListResponse = Gson().fromJson(response, PokemonListResponse::class.java)
+            onSuccess(pokemonListResponse.results)
         }
 
         override fun onFailure(
@@ -109,7 +95,57 @@ fun fetchPokemonData(
             errorResponse: String,
             t: Throwable?
         ) {
-            onFailure()
+            onSuccess(emptyList())
+        }
+    }]
+}
+
+@Composable
+fun PokemonListItem(pokemonSummary: PokemonSummary, onItemClick: (String) -> Unit) {
+    var pokemonResponse by remember { mutableStateOf<PokemonResponse?>(null) }
+
+    LaunchedEffect(pokemonSummary.url) {
+        fetchPokemonData(pokemonSummary.url) { response, _ ->
+            pokemonResponse = response
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.dp)
+            .clickable { onItemClick(pokemonSummary.name) },
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        pokemonResponse?.let { pokemon ->
+            GlideImage(
+                imageModel = { pokemon.sprites.front_default ?: "" },
+                modifier = Modifier.size(100.dp)
+            )
+            Text(text = pokemon.name.capitalize(), fontSize = 18.sp)
+            Text(text = pokemon.abilities.joinToString(", ") { it.ability.name }, fontSize = 14.sp)
+        } ?: run {
+            Text(text = "Loading...", fontSize = 18.sp)
+        }
+    }
+}
+
+fun fetchPokemonData(url: String, onComplete: (PokemonResponse?, String?) -> Unit) {
+    val client = AsyncHttpClient()
+
+    client[url, null, object : TextHttpResponseHandler() {
+        override fun onSuccess(statusCode: Int, headers: Headers, response: String) {
+            val pokemon = Gson().fromJson(response, PokemonResponse::class.java)
+            onComplete(pokemon, null)
+        }
+
+        override fun onFailure(
+            statusCode: Int,
+            headers: Headers?,
+            errorResponse: String,
+            t: Throwable?
+        ) {
+            onComplete(null, "Failed to load Pokémon details")
         }
     }]
 }
